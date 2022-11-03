@@ -1,0 +1,1964 @@
+commit 45ca4d1ee49fa08e2917b36f8858bd330255ae68
+Author: graced03 <xiyu_ding@hsph.harvard.edu>
+Date:   Wed Nov 18 18:20:09 2020 -0500
+
+    My message
+
+diff --git a/examples/text-classification/run_glue.py b/examples/text-classification/run_glue.py
+index cf9b765a..649faee1 100644
+--- a/examples/text-classification/run_glue.py
++++ b/examples/text-classification/run_glue.py
+@@ -22,9 +22,23 @@ import os
+ import sys
+ from dataclasses import dataclass, field
+ from typing import Callable, Dict, Optional
++import json
+ 
+ import numpy as np
+ 
++from transformers.modeling_bert import (
++    BertForMultiLabelSequenceClassification,
++    BertForMultiLabelSequenceClassification_w_Structure
++)
++from transformers.modeling_roberta import (
++    RobertaForMultiLabelSequenceClassification, 
++    RobertaForSequenceClassificationWithFeatures,
++    RobertaForMultiLabelSequenceClassification_w_Structure,
++)
++from transformers.modeling_longformer import (
++    LongformerForMultiLabelSequenceClassification,
++)
++from transformers.process_tetrad_output import find_parent_nodes, get_clsOrder, find_ancestry, nodes_ordered_by_freqencey
+ from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer, EvalPrediction, GlueDataset
+ from transformers import GlueDataTrainingArguments as DataTrainingArguments
+ from transformers import (
+@@ -34,7 +48,9 @@ from transformers import (
+     glue_compute_metrics,
+     glue_output_modes,
+     glue_tasks_num_labels,
++    glue_tasks_num_domains,
+     set_seed,
++    get_label_weights,
+ )
+ 
+ 
+@@ -107,6 +123,10 @@ def main():
+     try:
+         num_labels = glue_tasks_num_labels[data_args.task_name]
+         output_mode = glue_output_modes[data_args.task_name]
++        if output_mode == "classificationdomain":
++            num_domains = glue_tasks_num_domains[data_args.task_name]
++            print(num_domains)
++
+     except KeyError:
+         raise ValueError("Task not found: %s" % (data_args.task_name))
+ 
+@@ -126,12 +146,75 @@ def main():
+         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
+         cache_dir=model_args.cache_dir,
+     )
+-    model = AutoModelForSequenceClassification.from_pretrained(
+-        model_args.model_name_or_path,
+-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
+-        config=config,
+-        cache_dir=model_args.cache_dir,
+-    )
++    if output_mode == "mltclassification":
++        if model_args.model_name_or_path == 'roberta-base' or model_args.model_name_or_path.split('/')[-2].split('_')[-1] == 'roberta-base':
++            model = RobertaForMultiLabelSequenceClassification.from_pretrained(
++                model_args.model_name_or_path, 
++                config = config
++                )
++        if model_args.model_name_or_path == 'allenai/longformer-base-4096' or model_args.model_name_or_path.split('/')[-2].split('_')[-1] == 'longformer-base':
++            model = LongformerForMultiLabelSequenceClassification.from_pretrained(
++                model_args.model_name_or_path, 
++                config = config
++                )
++        else:
++            model = BertForMultiLabelSequenceClassification.from_pretrained(
++                model_args.model_name_or_path, 
++                config = config)
++        if training_args.pos_weight:
++            model.pos_weight = get_label_weights(os.path.join(data_args.data_dir, "train.tsv"))
++    
++    elif output_mode == "mltstrcls":
++        # process the tetrad output
++        tetrad_parents, classes = find_parent_nodes(os.path.join(data_args.data_dir, "tetrad_output.txt"), 
++                                                    os.path.join(data_args.data_dir, "classes.txt"))
++        with open(os.path.join(data_args.data_dir, 'tetrad_parents.json'), 'w') as fp:
++            json.dump(tetrad_parents, fp)
++        tetrad_clsOrder = get_clsOrder(tetrad_parents, classes)
++        with open(os.path.join(data_args.data_dir, 'tetrad_clsOrder.txt'), 'w') as f:
++            for item in tetrad_clsOrder:
++                f.write("%s\n" % item)
++        tetrad_ancestry = find_ancestry(tetrad_parents, tetrad_clsOrder)
++
++        if training_args.parents_type == 'parents':
++            parents = tetrad_parents
++        elif training_args.parents_type == 'ancestry':
++            parents = tetrad_ancestry
++
++        # freq_order, freq_parents = nodes_ordered_by_freqencey(os.path.join(data_args.data_dir, "train.tsv"))
++
++        # assign model
++        if model_args.model_name_or_path == 'roberta-base' or model_args.model_name_or_path.split('/')[-2].split('_')[-1] == 'roberta-base':
++            model = RobertaForMultiLabelSequenceClassification_w_Structure.from_pretrained(
++                model_args.model_name_or_path, 
++                config = config, 
++                parents = tetrad_parents, 
++                clsOrder = tetrad_clsOrder,
++                classes = classes)
++        else:
++            model = BertForMultiLabelSequenceClassification_w_Structure.from_pretrained(
++                model_args.model_name_or_path, 
++                config = config, 
++                parents = tetrad_parents, 
++                clsOrder = tetrad_clsOrder,
++                classes = classes)
++                
++        if training_args.pos_weight:
++            model.pos_weight = get_label_weights(os.path.join(data_args.data_dir, "train.tsv"))
++        
++    elif output_mode == "classificationdomain":
++        if model_args.model_name_or_path == 'roberta-base' or model_args.model_name_or_path.split('/')[-2].split('_')[-1] == 'roberta-base':
++            model = RobertaForSequenceClassificationWithFeatures.from_pretrained(
++                model_args.model_name_or_path, 
++                config = config,
++                num_domains = num_domains)
++    else:
++        model = AutoModelForSequenceClassification.from_pretrained(
++            model_args.model_name_or_path,
++            from_tf=bool(".ckpt" in model_args.model_name_or_path),
++            config=config,
++            cache_dir=model_args.cache_dir,
++        )
+ 
+     # Get datasets
+     train_dataset = (
+@@ -150,23 +233,31 @@ def main():
+ 
+     def build_compute_metrics_fn(task_name: str) -> Callable[[EvalPrediction], Dict]:
+         def compute_metrics_fn(p: EvalPrediction):
+-            if output_mode == "classification":
++            if output_mode == "classification" or output_mode == "classificationdomain":
+                 preds = np.argmax(p.predictions, axis=1)
+             elif output_mode == "regression":
+                 preds = np.squeeze(p.predictions)
++                # if logits > 0, then the predicted prob > 0.5
++            elif output_mode == "mltclassification" or output_mode == "mltstrcls":
++                preds = (p.predictions > 0).astype(int)
+             return glue_compute_metrics(task_name, preds, p.label_ids)
+-
+         return compute_metrics_fn
+ 
+     # Initialize our Trainer
++    # print("\n")
++    # print(model)
++    # print("\n")
++
+     trainer = Trainer(
+         model=model,
+         args=training_args,
++        output_mode=output_mode,
+         train_dataset=train_dataset,
+         eval_dataset=eval_dataset,
+         compute_metrics=build_compute_metrics_fn(data_args.task_name),
+     )
+-
++    print(data_args.task_name)
++    # trainer.compute_metrics = build_compute_metrics_fn(eval_dataset.args.task_name)
+     # Training
+     if training_args.do_train:
+         trainer.train(
+@@ -192,8 +283,15 @@ def main():
+             )
+ 
+         for eval_dataset in eval_datasets:
+-            trainer.compute_metrics = build_compute_metrics_fn(eval_dataset.args.task_name)
+-            eval_result = trainer.evaluate(eval_dataset=eval_dataset)
++            preds, label_ids, eval_result = trainer.evaluate(eval_dataset=eval_dataset)
++            
++            if output_mode == "classification" or output_mode == "classificationdomain":
++                preds = np.argmax(preds, axis=1)
++            elif output_mode == "mltclassification" or output_mode == "mltstrcls":
++                preds = (preds > 0).astype(int)
++
++            np.savetxt(os.path.join(training_args.output_dir, "eval_pred_labels.csv"), preds, delimiter = ",")
++            np.savetxt(os.path.join(training_args.output_dir, "eval_orig_labels.csv"), label_ids, delimiter = ",")
+ 
+             output_eval_file = os.path.join(
+                 training_args.output_dir, f"eval_results_{eval_dataset.args.task_name}.txt"
+@@ -215,11 +313,14 @@ def main():
+             test_datasets.append(
+                 GlueDataset(mnli_mm_data_args, tokenizer=tokenizer, mode="test", cache_dir=model_args.cache_dir)
+             )
+-
+         for test_dataset in test_datasets:
+-            predictions = trainer.predict(test_dataset=test_dataset).predictions
+-            if output_mode == "classification":
+-                predictions = np.argmax(predictions, axis=1)
++            preds, label_ids, eval_result = trainer.predict(test_dataset=test_dataset)
++            if output_mode == "classification" or output_mode == "classificationdomain":
++                preds = np.argmax(preds, axis=1)
++            elif output_mode == "mltclassification" or output_mode == "mltstrcls":
++                preds = (preds > 0).astype(int)
++            np.savetxt(os.path.join(training_args.output_dir, "predict_pred_labels.csv"), preds, delimiter = ",")
++            # np.savetxt(os.path.join(training_args.output_dir, "orig_labels.csv"), label_ids, delimiter = ",")
+ 
+             output_test_file = os.path.join(
+                 training_args.output_dir, f"test_results_{test_dataset.args.task_name}.txt"
+@@ -228,12 +329,12 @@ def main():
+                 with open(output_test_file, "w") as writer:
+                     logger.info("***** Test results {} *****".format(test_dataset.args.task_name))
+                     writer.write("index\tprediction\n")
+-                    for index, item in enumerate(predictions):
++                    for index, item in enumerate(preds):
+                         if output_mode == "regression":
+                             writer.write("%d\t%3.3f\n" % (index, item))
+-                        else:
+-                            item = test_dataset.get_labels()[item]
+-                            writer.write("%d\t%s\n" % (index, item))
++                        # else:
++                        #     item = test_dataset.get_labels()[item]
++                        #     writer.write("%d\t%s\n" % (index, item))
+     return eval_results
+ 
+ 
+diff --git a/src/transformers/__init__.py b/src/transformers/__init__.py
+index 0236dcf3..5c44270a 100755
+--- a/src/transformers/__init__.py
++++ b/src/transformers/__init__.py
+@@ -59,11 +59,13 @@ from .data import (
+     glue_output_modes,
+     glue_processors,
+     glue_tasks_num_labels,
++    glue_tasks_num_domains,
+     is_sklearn_available,
+     squad_convert_examples_to_features,
+     xnli_output_modes,
+     xnli_processors,
+     xnli_tasks_num_labels,
++    get_label_weights,
+ )
+ 
+ # Files and general utilities
+diff --git a/src/transformers/data/__init__.py b/src/transformers/data/__init__.py
+index 8d5f6b85..0ea87e3d 100644
+--- a/src/transformers/data/__init__.py
++++ b/src/transformers/data/__init__.py
+@@ -16,11 +16,13 @@ from .processors import (
+     glue_output_modes,
+     glue_processors,
+     glue_tasks_num_labels,
++    glue_tasks_num_domains,
+     squad_convert_examples_to_features,
+     xnli_output_modes,
+     xnli_processors,
+     xnli_tasks_num_labels,
+ )
++from .datasets import get_label_weights
+ 
+ 
+ if is_sklearn_available():
+diff --git a/src/transformers/data/data_collator.py b/src/transformers/data/data_collator.py
+index b4d9f205..7e95dd87 100644
+--- a/src/transformers/data/data_collator.py
++++ b/src/transformers/data/data_collator.py
+@@ -45,13 +45,23 @@ def default_data_collator(features: List[InputDataClass]) -> Dict[str, torch.Ten
+     if "label" in first and first["label"] is not None:
+         label = first["label"].item() if isinstance(first["label"], torch.Tensor) else first["label"]
+         dtype = torch.long if isinstance(label, int) else torch.float
++        # for f in features:
++        #     print(f["label"])
++        # for f in features:
++        #     print(f)
+         batch["labels"] = torch.tensor([f["label"] for f in features], dtype=dtype)
++        if first["input_domains"] is not None:
++            batch["input_domains"] = torch.tensor([f["input_domains"] for f in features], dtype=dtype)
++
+     elif "label_ids" in first and first["label_ids"] is not None:
+         if isinstance(first["label_ids"], torch.Tensor):
+             batch["labels"] = torch.stack([f["label_ids"] for f in features])
+         else:
+             dtype = torch.long if type(first["label_ids"][0]) is int else torch.float
+             batch["labels"] = torch.tensor([f["label_ids"] for f in features], dtype=dtype)
++            
++            if first["input_domains"] is not None:
++                batch["input_domains"] = torch.tensor([f["input_domains"] for f in features], dtype=dtype)
+ 
+     # Handling of all other possible keys.
+     # Again, we will use the first element to figure out which key/values are not None for this model.
+diff --git a/src/transformers/data/datasets/__init__.py b/src/transformers/data/datasets/__init__.py
+index ca2ab15e..a500a858 100644
+--- a/src/transformers/data/datasets/__init__.py
++++ b/src/transformers/data/datasets/__init__.py
+@@ -5,3 +5,4 @@
+ from .glue import GlueDataset, GlueDataTrainingArguments
+ from .language_modeling import LineByLineTextDataset, TextDataset
+ from .squad import SquadDataset, SquadDataTrainingArguments
++from .get_label_weights import get_label_weights
+diff --git a/src/transformers/data/datasets/get_label_weights.py b/src/transformers/data/datasets/get_label_weights.py
+new file mode 100644
+index 00000000..b4e8ccd5
+--- /dev/null
++++ b/src/transformers/data/datasets/get_label_weights.py
+@@ -0,0 +1,6 @@
++import pandas as pd
++def get_label_weights(data_dir):
++    data = pd.read_csv(data_dir, index_col = 0, sep = '\t', encoding = "utf8")
++    y = data.iloc[:,4:].copy()
++    pos_weights = (y.sum(0).values.sum() - y.sum(0).values) / y.sum(0).values
++    return pos_weights
+\ No newline at end of file
+diff --git a/src/transformers/data/datasets/glue.py b/src/transformers/data/datasets/glue.py
+index f696f682..cab632ae 100644
+--- a/src/transformers/data/datasets/glue.py
++++ b/src/transformers/data/datasets/glue.py
+@@ -88,7 +88,19 @@ class GlueDataset(Dataset):
+                 mode.value, tokenizer.__class__.__name__, str(args.max_seq_length), args.task_name,
+             ),
+         )
+-        label_list = self.processor.get_labels()
++
++        domain_list = None
++
++        if self.output_mode == "classificationdomain":
++            domain_list = self.processor.get_domains(args.data_dir)
++        
++        self.domain_list = domain_list
++
++        try:
++            label_list = self.processor.get_labels()
++        except:
++            label_list = self.processor.get_labels(args.data_dir)
++        
+         if args.task_name in ["mnli", "mnli-mm"] and tokenizer.__class__ in (
+             RobertaTokenizer,
+             RobertaTokenizerFast,
+@@ -122,12 +134,16 @@ class GlueDataset(Dataset):
+                     examples = self.processor.get_train_examples(args.data_dir)
+                 if limit_length is not None:
+                     examples = examples[:limit_length]
++                
+                 self.features = glue_convert_examples_to_features(
+                     examples,
+                     tokenizer,
+                     max_length=args.max_seq_length,
+                     label_list=label_list,
++                    # task = args.task_name,
+                     output_mode=self.output_mode,
++                    data_dir=args.data_dir,
++                    domain_list=domain_list,
+                 )
+                 start = time.time()
+                 torch.save(self.features, cached_features_file)
+@@ -144,3 +160,6 @@ class GlueDataset(Dataset):
+ 
+     def get_labels(self):
+         return self.label_list
++    
++    def get_domains(self):
++        return self.domain_list
+diff --git a/src/transformers/data/metrics/__init__.py b/src/transformers/data/metrics/__init__.py
+index 59ffdc8d..4e51d4be 100644
+--- a/src/transformers/data/metrics/__init__.py
++++ b/src/transformers/data/metrics/__init__.py
+@@ -16,7 +16,7 @@
+ 
+ try:
+     from scipy.stats import pearsonr, spearmanr
+-    from sklearn.metrics import matthews_corrcoef, f1_score
++    from sklearn.metrics import matthews_corrcoef, f1_score, classification_report
+ 
+     _has_sklearn = True
+ except (AttributeError, ImportError):
+@@ -74,6 +74,11 @@ if _has_sklearn:
+             return {"acc": simple_accuracy(preds, labels)}
+         elif task_name == "hans":
+             return {"acc": simple_accuracy(preds, labels)}
++        
++        # add evaluation metric for eConsult project - classification report from sklearn
++        elif task_name in ["ts","g-type","g-content","psy-re","psy-se","psy-se-domain","g-content-structure"]:
++            return {"classification_report": classification_report(labels, preds), 
++                    "f1": f1_score(labels, preds, average='macro'),}
+         else:
+             raise KeyError(task_name)
+ 
+diff --git a/src/transformers/data/processors/__init__.py b/src/transformers/data/processors/__init__.py
+index 4cb37faf..cb979247 100644
+--- a/src/transformers/data/processors/__init__.py
++++ b/src/transformers/data/processors/__init__.py
+@@ -2,7 +2,7 @@
+ # There's no way to ignore "F401 '...' imported but unused" warnings in this
+ # module, but to preserve other warnings. So, don't check this module at all.
+ 
+-from .glue import glue_convert_examples_to_features, glue_output_modes, glue_processors, glue_tasks_num_labels
++from .glue import glue_convert_examples_to_features, glue_output_modes, glue_processors, glue_tasks_num_labels, glue_tasks_num_domains
+ from .squad import SquadExample, SquadFeatures, SquadV1Processor, SquadV2Processor, squad_convert_examples_to_features
+ from .utils import DataProcessor, InputExample, InputFeatures, SingleSentenceClassificationProcessor
+ from .xnli import xnli_output_modes, xnli_processors, xnli_tasks_num_labels
+diff --git a/src/transformers/data/processors/glue.py b/src/transformers/data/processors/glue.py
+index bc28cdc3..5c87d367 100644
+--- a/src/transformers/data/processors/glue.py
++++ b/src/transformers/data/processors/glue.py
+@@ -17,6 +17,9 @@
+ 
+ import logging
+ import os
++import pandas as pd
++import numpy as np 
++
+ from dataclasses import asdict
+ from enum import Enum
+ from typing import List, Optional, Union
+@@ -36,9 +39,11 @@ def glue_convert_examples_to_features(
+     examples: Union[List[InputExample], "tf.data.Dataset"],
+     tokenizer: PreTrainedTokenizer,
+     max_length: Optional[int] = None,
++    domain_list: Optional[List[str]] = None,
+     task=None,
+     label_list=None,
+     output_mode=None,
++    data_dir=None,
+ ):
+     """
+     Loads a data file into a list of ``InputFeatures``
+@@ -62,7 +67,8 @@ def glue_convert_examples_to_features(
+             raise ValueError("When calling glue_convert_examples_to_features from TF, the task parameter is required.")
+         return _tf_glue_convert_examples_to_features(examples, tokenizer, max_length=max_length, task=task)
+     return _glue_convert_examples_to_features(
+-        examples, tokenizer, max_length=max_length, task=task, label_list=label_list, output_mode=output_mode
++        examples, tokenizer, max_length=max_length, task=task, label_list=label_list, domain_list=domain_list,
++        output_mode=output_mode, data_dir=data_dir,
+     )
+ 
+ 
+@@ -101,7 +107,9 @@ def _glue_convert_examples_to_features(
+     max_length: Optional[int] = None,
+     task=None,
+     label_list=None,
++    domain_list=None,
+     output_mode=None,
++    data_dir=None,
+ ):
+     if max_length is None:
+         max_length = tokenizer.max_len
+@@ -109,25 +117,41 @@ def _glue_convert_examples_to_features(
+     if task is not None:
+         processor = glue_processors[task]()
+         if label_list is None:
+-            label_list = processor.get_labels()
++            try:
++                label_list = processor.get_labels()
++            except: 
++                label_list = processor.get_labels(data_dir)
+             logger.info("Using label list %s for task %s" % (label_list, task))
+         if output_mode is None:
+             output_mode = glue_output_modes[task]
+             logger.info("Using output mode %s for task %s" % (output_mode, task))
++        
++        if output_mode == "classificationdomain":
++            if domain_list is None:
++                domain_list = processor.get_domains(data_dir)
+ 
++    # label mapping
+     label_map = {label: i for i, label in enumerate(label_list)}
+-
+-    def label_from_example(example: InputExample) -> Union[int, float, None]:
++    def label_from_example(example: InputExample) -> Union[int, float, list, None]:
+         if example.label is None:
+             return None
+-        if output_mode == "classification":
++        if output_mode == "classification" or output_mode == "classificationdomain":
+             return label_map[example.label]
++        elif output_mode == "mltclassification" or output_mode == "mltstrcls":
++            return list(map(int, example.label))
+         elif output_mode == "regression":
+             return float(example.label)
+         raise KeyError(output_mode)
+-
+     labels = [label_from_example(example) for example in examples]
+ 
++    # domain mapping
++    if output_mode == "classificationdomain":
++        domain_map = {domain: i for i, domain in enumerate(domain_list)}
++        def domain_from_example(example: InputExample) -> Union[int, float, list, None]:
++            return domain_map[example.input_domains]
++        domains = [domain_from_example(example) for example in examples]
++        
++
+     batch_encoding = tokenizer(
+         [(example.text_a, example.text_b) for example in examples],
+         max_length=max_length,
+@@ -138,21 +162,26 @@ def _glue_convert_examples_to_features(
+     features = []
+     for i in range(len(examples)):
+         inputs = {k: batch_encoding[k][i] for k in batch_encoding}
+-
+-        feature = InputFeatures(**inputs, label=labels[i])
++        if output_mode == "classificationdomain":
++            feature = InputFeatures(**inputs, label=labels[i], input_domains=domains[i])
++        else:
++            feature = InputFeatures(**inputs, label=labels[i])
+         features.append(feature)
+ 
+     for i, example in enumerate(examples[:5]):
+         logger.info("*** Example ***")
+         logger.info("guid: %s" % (example.guid))
+         logger.info("features: %s" % features[i])
+-
++        # logger.info("domains: %s" % domains[i])
+     return features
+ 
+ 
+ class OutputMode(Enum):
++    mltclassification = "mltclassification"
+     classification = "classification"
+     regression = "regression"
++    classificationdomain = "classificationdomain"
++    mltstrcls = "mltstrcls"
+ 
+ 
+ class MrpcProcessor(DataProcessor):
+@@ -552,6 +581,141 @@ class WnliProcessor(DataProcessor):
+             examples.append(InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+         return examples
+ 
++class TSProcessor(DataProcessor):
++    """Processor for Triage Status - eConsult project."""
++
++    def get_train_examples(self, data_dir):
++        """See base class."""
++        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
++
++    def get_dev_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
++
++    def get_test_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
++
++    def get_labels(self):
++        """See base class."""
++        return ["Not_Scheduled", "Initially_Scheduled", "Overbook", "Scheduled_After_Review"]
++
++    def _create_examples(self, lines, set_type):
++        """Creates examples for the training, dev and test sets."""
++        examples = []
++        for (i, line) in enumerate(lines):
++            if i == 0:
++                continue
++            guid = "%s-%s" % (set_type, line[1])
++            text_a = line[3]
++            label = None if set_type == "test" else line[2]
++            examples.append(InputExample(guid=guid, text_a=text_a, label=label))
++        return examples
++
++class MTLProcessor(DataProcessor):
++    """Processor for Multi-task learning - question type or question content."""
++
++    def get_train_examples(self, data_dir):
++        """See base class."""
++        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
++
++    def get_dev_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
++
++    def get_test_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
++
++    def get_labels(self, data_dir=None):
++        """See base class."""
++        return list(pd.read_csv(os.path.join(data_dir, "classes.txt"), header=None)[0].values)
++
++    def _create_examples(self, lines, set_type):
++        """Creates examples for the training, dev and test sets."""
++        examples = []
++        for (i, line) in enumerate(lines):
++            if i == 0:
++                continue
++            guid = "%s-%s" % (set_type, line[1])
++            text_a = line[3]
++            label = None if set_type == "test" else line[5:]
++            examples.append(InputExample(guid=guid, text_a=text_a, label=label))
++        return examples
++
++class PsySeProcessor(DataProcessor):
++    """Processor for the MRPC data set (GLUE version)."""
++
++    def get_train_examples(self, data_dir):
++        """See base class."""
++        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
++
++    def get_dev_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
++
++    def get_test_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
++
++    def get_labels(self):
++        """See base class."""
++        return ["0", "1", "9"]
++
++    def _create_examples(self, lines, set_type):
++        """Creates examples for the training, dev and test sets."""
++        examples = []
++        for (i, line) in enumerate(lines):
++            if i == 0:
++                continue
++            guid = "%s-%s" % (set_type, line[1])
++            text_a = line[3]
++            text_b = line[2]
++            label = None if set_type == "test" else line[4]
++            # examples.append(InputExample(guid=guid, text_a=text_a, label=label))
++            examples.append(InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
++        return examples
++
++class PsySeDomainProcessor(DataProcessor):
++    """Processor for the MRPC data set (GLUE version)."""
++
++    def get_train_examples(self, data_dir):
++        """See base class."""
++        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
++
++    def get_dev_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
++
++    def get_test_examples(self, data_dir):
++        """See base class."""
++        return self._create_examples(self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
++
++    def get_domains(self, data_dir):
++        """See base class."""
++        return list(pd.read_csv(os.path.join(data_dir, "domains.txt"), header=None)[0].values)
++
++    def get_labels(self):
++        """See base class."""
++        return ["0", "1", "9"]
++
++    def _create_examples(self, lines, set_type):
++        """Creates examples for the training, dev and test sets."""
++        examples = []
++        for (i, line) in enumerate(lines):
++            if i == 0:
++                continue
++            guid = "%s-%s" % (set_type, line[1])
++            text_a = line[3]
++            input_domains = line[2]
++            label = None if set_type == "test" else line[4]
++            examples.append(InputExample(guid=guid, input_domains = input_domains, text_a=text_a, label=label))
++        return examples
++
+ 
+ glue_tasks_num_labels = {
+     "cola": 2,
+@@ -563,6 +727,18 @@ glue_tasks_num_labels = {
+     "qnli": 2,
+     "rte": 2,
+     "wnli": 2,
++    "g-type": 5,
++    "g-content": 28,
++    "ts": 4,
++    "psy-se": 3,
++    "psy-re": 8,
++    "psy-se-domain": 3,
++    "g-content-structure": 28,
++    "g-type-structure": 5,
++}
++
++glue_tasks_num_domains = {
++    "psy-se-domain": 7,
+ }
+ 
+ glue_processors = {
+@@ -576,6 +752,14 @@ glue_processors = {
+     "qnli": QnliProcessor,
+     "rte": RteProcessor,
+     "wnli": WnliProcessor,
++    "g-type": MTLProcessor, # multi-task learning data processor
++    "g-content": MTLProcessor,
++    "psy-re": MTLProcessor,
++    "psy-se": PsySeProcessor,
++    "ts": TSProcessor, # multi-class data processor for triage status
++    "psy-se-domain": PsySeDomainProcessor,
++    "g-type-structure": MTLProcessor,
++    "g-content-structure": MTLProcessor,
+ }
+ 
+ glue_output_modes = {
+@@ -589,4 +773,12 @@ glue_output_modes = {
+     "qnli": "classification",
+     "rte": "classification",
+     "wnli": "classification",
++    "psy-se": "classification",
++    "g-type": "mltclassification",
++    "g-content": "mltclassification",
++    "ts": "classification",
++    "psy-re": "mltclassification",
++    "psy-se-domain": "classificationdomain",
++    "g-content-structure": "mltstrcls",
++    "g-type-structure": "mltstrcls",
+ }
+diff --git a/src/transformers/data/processors/utils.py b/src/transformers/data/processors/utils.py
+index 4550e575..5dba63ce 100644
+--- a/src/transformers/data/processors/utils.py
++++ b/src/transformers/data/processors/utils.py
+@@ -44,6 +44,7 @@ class InputExample:
+ 
+     guid: str
+     text_a: str
++    input_domains: Optional[str] = None
+     text_b: Optional[str] = None
+     label: Optional[str] = None
+ 
+@@ -67,12 +68,16 @@ class InputFeatures:
+             portions of the inputs. Only some models use them.
+         label: (Optional) Label corresponding to the input. Int for classification problems,
+             float for regression problems.
++        
++        input_domains: (Optional) Extra feature corresponding to the input. Used in Psychosis sentiment
++        classification with clinical domain as extra features.
+     """
+ 
+     input_ids: List[int]
+     attention_mask: Optional[List[int]] = None
+     token_type_ids: Optional[List[int]] = None
+-    label: Optional[Union[int, float]] = None
++    input_domains: Optional[List[int]] = None
++    label: Optional[List[Union[int, float]]] = None
+ 
+     def to_json_string(self):
+         """Serializes this instance to a JSON string."""
+@@ -103,10 +108,15 @@ class DataProcessor:
+         """Gets a collection of :class:`InputExample` for the test set."""
+         raise NotImplementedError()
+ 
+-    def get_labels(self):
++    def get_labels(self, data_dir=None):
+         """Gets the list of labels for this data set."""
+         raise NotImplementedError()
+ 
++    def get_domains(self, data_dir):
++        """Gets a collection of features to build extra feature embeddings."""
++        """Implemented for psychosis sentiment tasks which contains data coming from several different domains."""
++        raise NotImplementedError()
++
+     def tfds_map(self, example):
+         """Some tensorflow_datasets datasets are not formatted the same way the GLUE datasets are.
+         This method converts examples to the correct format."""
+@@ -295,7 +305,7 @@ class SingleSentenceClassificationProcessor(DataProcessor):
+                 len(attention_mask), batch_length
+             )
+ 
+-            if self.mode == "classification":
++            if self.mode == "classification" or "mltclassification":
+                 label = label_map[example.label]
+             elif self.mode == "regression":
+                 label = float(example.label)
+@@ -336,7 +346,7 @@ class SingleSentenceClassificationProcessor(DataProcessor):
+ 
+             all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+             all_attention_mask = torch.tensor([f.attention_mask for f in features], dtype=torch.long)
+-            if self.mode == "classification":
++            if self.mode == "classification" or "mltclassification":
+                 all_labels = torch.tensor([f.label for f in features], dtype=torch.long)
+             elif self.mode == "regression":
+                 all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
+diff --git a/src/transformers/modeling_auto.py b/src/transformers/modeling_auto.py
+index d59f8d60..4eefef71 100644
+--- a/src/transformers/modeling_auto.py
++++ b/src/transformers/modeling_auto.py
+@@ -66,6 +66,7 @@ from .modeling_bert import (
+     BertForPreTraining,
+     BertForQuestionAnswering,
+     BertForSequenceClassification,
++    BertForMultiLabelSequenceClassification,
+     BertForTokenClassification,
+     BertLMHeadModel,
+     BertModel,
+@@ -131,13 +132,16 @@ from .modeling_reformer import (
+     ReformerModelWithLMHead,
+ )
+ from .modeling_retribert import RetriBertModel
++
+ from .modeling_roberta import (
+     RobertaForMaskedLM,
+     RobertaForMultipleChoice,
+     RobertaForQuestionAnswering,
+     RobertaForSequenceClassification,
++    RobertaForMultiLabelSequenceClassification,
+     RobertaForTokenClassification,
+     RobertaModel,
++    RobertaForSequenceClassificationWithFeatures,
+ )
+ from .modeling_t5 import T5ForConditionalGeneration, T5Model
+ from .modeling_transfo_xl import TransfoXLLMHeadModel, TransfoXLModel
+@@ -304,6 +308,19 @@ MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
+     ]
+ )
+ 
++MODEL_FOR_SEQUENCE_CLASSIFICATION_WITHFEATURES_MAPPING = OrderedDict(
++    [
++        (RobertaConfig, RobertaForSequenceClassificationWithFeatures),
++    ]
++)
++
++MODEL_FOR_MLT_SEQUENCE_CLASSIFICATION_MAPPING = OrderedDict(
++    [
++        (BertConfig, BertForMultiLabelSequenceClassification),
++        (RobertaConfig, RobertaForMultiLabelSequenceClassification),
++    ]
++)
++
+ MODEL_FOR_QUESTION_ANSWERING_MAPPING = OrderedDict(
+     [
+         (DistilBertConfig, DistilBertForQuestionAnswering),
+diff --git a/src/transformers/modeling_bert.py b/src/transformers/modeling_bert.py
+index d2f6c371..7e0fa872 100644
+--- a/src/transformers/modeling_bert.py
++++ b/src/transformers/modeling_bert.py
+@@ -22,11 +22,12 @@ import os
+ import warnings
+ from dataclasses import dataclass
+ from typing import Optional, Tuple
++import numpy as np
+ 
+ import torch
+ import torch.utils.checkpoint
+ from torch import nn
+-from torch.nn import CrossEntropyLoss, MSELoss
++from torch.nn import CrossEntropyLoss, MSELoss, BCEWithLogitsLoss, ModuleList
+ 
+ from .activations import gelu, gelu_new, swish
+ from .configuration_bert import BertConfig
+@@ -1367,7 +1368,6 @@ class BertForMultipleChoice(BertPreTrainedModel):
+         )
+ 
+         pooled_output = outputs[1]
+-
+         pooled_output = self.dropout(pooled_output)
+         logits = self.classifier(pooled_output)
+         reshaped_logits = logits.view(-1, num_choices)
+@@ -1564,3 +1564,184 @@ class BertForQuestionAnswering(BertPreTrainedModel):
+             hidden_states=outputs.hidden_states,
+             attentions=outputs.attentions,
+         )
++
++class BertForMultiLabelSequenceClassification(BertPreTrainedModel):
++    def __init__(self, config, pos_weight = None):
++        super().__init__(config)
++        self.num_labels = config.num_labels
++        self.pos_weight = pos_weight
++        self.bert = BertModel(config)
++        self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
++
++        self.init_weights()
++
++    @add_start_docstrings_to_callable(BERT_INPUTS_DOCSTRING.format("(batch_size, sequence_length)"))
++    @add_code_sample_docstrings(
++        tokenizer_class=_TOKENIZER_FOR_DOC,
++        checkpoint="bert-base-uncased",
++        output_type=SequenceClassifierOutput,
++        config_class=_CONFIG_FOR_DOC,
++    )
++    def forward(
++        self,
++        input_ids=None,
++        attention_mask=None,
++        token_type_ids=None,
++        position_ids=None,
++        head_mask=None,
++        inputs_embeds=None,
++        labels=None,
++        output_attentions=None,
++        output_hidden_states=None,
++        return_tuple=None,
++    ):
++        r"""
++        Multi-label classification
++        """
++        return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
++
++        outputs = self.bert(
++            input_ids,
++            attention_mask=attention_mask,
++            token_type_ids=token_type_ids,
++            position_ids=position_ids,
++            head_mask=head_mask,
++            inputs_embeds=inputs_embeds,
++            output_attentions=output_attentions,
++            output_hidden_states=output_hidden_states,
++            return_tuple=return_tuple,
++        )
++
++        pooled_output = outputs[1]
++
++        pooled_output = self.dropout(pooled_output)
++        logits = self.classifier(pooled_output)
++
++        loss = None
++        if labels is not None:
++            if self.pos_weight is not None:
++                pos_weight = torch.from_numpy(self.pos_weight).to(logits.device)
++                loss_fct = BCEWithLogitsLoss(pos_weight = pos_weight)
++            else:
++                loss_fct = BCEWithLogitsLoss()
++            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
++
++        if return_tuple:
++            output = (logits,) + outputs[2:]
++            return ((loss,) + output) if loss is not None else output
++
++        return SequenceClassifierOutput(
++            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
++        )
++
++class BertClassificationHead_w_Structure(nn.Module):
++    # init network
++    def __init__(self, config, parents, clsOrder, classes):
++        super().__init__()
++        # self.dense = nn.Linear(config.hidden_size, config.hidden_size)
++        self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        self.classifiers = ModuleList()
++        # add linear layers for 
++        for clsName in clsOrder:
++            # print(clsName)
++            # print(config.hidden_size + len(parents[clsName]))
++            self.classifiers.append( nn.Linear(config.hidden_size + len(parents[clsName]), 1))
++    
++    def forward(self, features, parents, clsOrder, classes, **kwargs):
++        # x = self.dropout(features)
++        # x = self.dense(x)
++        # x = torch.tanh(x)
++        encoding = self.dropout(features)
++        # print(len(clsOrder))
++        clsOuts = torch.zeros(encoding.shape[0], len(clsOrder))
++        for ind in range(len(clsOrder)):
++            current_cls = clsOrder[ind]
++            if len( parents[current_cls] ) == 0:
++                current_cls_out = self.classifiers[ind](encoding)
++            else:
++                num_parents = len(parents[current_cls])
++                parents_outs = torch.zeros(encoding.shape[0], num_parents)
++                for parent_ind in range(num_parents):
++                    parent = parents[current_cls][parent_ind]
++                    parents_outs[:, parent_ind] = clsOuts[:, classes.index(parent)]
++                    # parents_outs[:, parent_ind] = torch.sigmoid(clsOuts[:, classes.index(parent)])
++                parents_outs = parents_outs.to(encoding.device)
++                current_cls_out = self.classifiers[ind](torch.cat( (encoding, parents_outs), dim = 1))
++            clsOuts[:, classes.index(current_cls)] = current_cls_out[:,0]
++            # print(clsOuts[:, classes.index(current_cls)].shape)
++            # print(current_cls_out[:,0].shape)
++        clsOuts = clsOuts.to(encoding.device)
++        # print(clsOuts.shape)
++        return clsOuts
++
++class BertForMultiLabelSequenceClassification_w_Structure(BertPreTrainedModel):
++    def __init__(self, config, parents, clsOrder, classes, pos_weight = None):
++        super().__init__(config)
++        self.num_labels = config.num_labels
++
++        self.bert = BertModel(config)
++        self.classifier = BertClassificationHead_w_Structure(config, parents, clsOrder, classes)
++        self.parents = parents
++        self.clsOrder = clsOrder
++        self.classes = classes
++        self.pos_weight = pos_weight
++        self.init_weights()
++
++    @add_start_docstrings_to_callable(BERT_INPUTS_DOCSTRING.format("(batch_size, sequence_length)"))
++    @add_code_sample_docstrings(
++        tokenizer_class=_TOKENIZER_FOR_DOC,
++        checkpoint="bert-base-uncased",
++        output_type=SequenceClassifierOutput,
++        config_class=_CONFIG_FOR_DOC,
++    )
++    def forward(
++        self,
++        input_ids=None,
++        attention_mask=None,
++        token_type_ids=None,
++        position_ids=None,
++        head_mask=None,
++        inputs_embeds=None,
++        labels=None,
++        output_attentions=None,
++        output_hidden_states=None,
++        return_tuple=None,
++    ):
++        r"""
++        Multi-label classification
++        """
++        return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
++
++        outputs = self.bert(
++            input_ids,
++            attention_mask=attention_mask,
++            token_type_ids=token_type_ids,
++            position_ids=position_ids,
++            head_mask=head_mask,
++            inputs_embeds=inputs_embeds,
++            output_attentions=output_attentions,
++            output_hidden_states=output_hidden_states,
++            return_tuple=return_tuple,
++        )
++
++        pooled_output = outputs[1]
++        logits = self.classifier(pooled_output, 
++                                 self.parents, self.clsOrder, self.classes)
++
++        loss = None
++        if labels is not None:
++            if self.pos_weight is not None:
++                pos_weight = torch.from_numpy(self.pos_weight).to(logits.device)
++                loss_fct = BCEWithLogitsLoss(pos_weight = pos_weight)
++            else:
++                loss_fct = BCEWithLogitsLoss()
++            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
++
++        if return_tuple:
++            output = (logits,) + outputs[2:]
++            return ((loss,) + output) if loss is not None else output
++
++        return SequenceClassifierOutput(
++            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
++        )
+\ No newline at end of file
+diff --git a/src/transformers/modeling_bert_mlt.py b/src/transformers/modeling_bert_mlt.py
+new file mode 100644
+index 00000000..b254be43
+--- /dev/null
++++ b/src/transformers/modeling_bert_mlt.py
+@@ -0,0 +1,65 @@
++class BertForMultiLabelSequenceClassification(BertPreTrainedModel):
++    def __init__(self, config):
++        super().__init__(config)
++        self.num_labels = config.num_labels
++
++        self.bert = BertModel(config)
++        self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
++
++        self.init_weights()
++
++    @add_start_docstrings_to_callable(BERT_INPUTS_DOCSTRING.format("(batch_size, sequence_length)"))
++    @add_code_sample_docstrings(
++        tokenizer_class=_TOKENIZER_FOR_DOC,
++        checkpoint="bert-base-uncased",
++        output_type=SequenceClassifierOutput,
++        config_class=_CONFIG_FOR_DOC,
++    )
++    def forward(
++        self,
++        input_ids=None,
++        attention_mask=None,
++        token_type_ids=None,
++        position_ids=None,
++        head_mask=None,
++        inputs_embeds=None,
++        labels=None,
++        output_attentions=None,
++        output_hidden_states=None,
++        return_tuple=None,
++    ):
++        r"""
++        Multi-lable classification
++        """
++        return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
++
++        outputs = self.bert(
++            input_ids,
++            attention_mask=attention_mask,
++            token_type_ids=token_type_ids,
++            position_ids=position_ids,
++            head_mask=head_mask,
++            inputs_embeds=inputs_embeds,
++            output_attentions=output_attentions,
++            output_hidden_states=output_hidden_states,
++            return_tuple=return_tuple,
++        )
++
++        pooled_output = outputs[1]
++
++        pooled_output = self.dropout(pooled_output)
++        logits = self.classifier(pooled_output)
++
++        loss = None
++        if labels is not None:
++            loss_fct = BCEWithLogitsLoss()
++            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
++
++        if return_tuple:
++            output = (logits,) + outputs[2:]
++            return ((loss,) + output) if loss is not None else output
++
++        return SequenceClassifierOutput(
++            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
++        )
+diff --git a/src/transformers/modeling_longformer.py b/src/transformers/modeling_longformer.py
+index b31e2dda..0ee57aa2 100644
+--- a/src/transformers/modeling_longformer.py
++++ b/src/transformers/modeling_longformer.py
+@@ -20,7 +20,7 @@ import warnings
+ 
+ import torch
+ import torch.nn as nn
+-from torch.nn import CrossEntropyLoss, MSELoss
++from torch.nn import CrossEntropyLoss, MSELoss, BCEWithLogitsLoss, ModuleList
+ from torch.nn import functional as F
+ 
+ from .configuration_longformer import LongformerConfig
+@@ -896,11 +896,14 @@ class LongformerModel(LongformerPreTrainedModel):
+ 
+         padding_len = (attention_window - seq_len % attention_window) % attention_window
+         if padding_len > 0:
+-            logger.info(
+-                "Input ids are automatically padded from {} to {} to be a multiple of `config.attention_window`: {}".format(
+-                    seq_len, seq_len + padding_len, attention_window
+-                )
+-            )
++            # command out the logger info
++            # using the default setup, repeatedly showing
++            # Input ids are automatically padded from 128 to 512 to be a multiple of `config.attention_window`: 512
++            # logger.info(
++            #     "Input ids are automatically padded from {} to {} to be a multiple of `config.attention_window`: {}".format(
++            #         seq_len, seq_len + padding_len, attention_window
++            #     )
++            # )
+             if input_ids is not None:
+                 input_ids = F.pad(input_ids, (0, padding_len), value=pad_token_id)
+             if position_ids is not None:
+@@ -1181,7 +1184,7 @@ class LongformerForSequenceClassification(BertPreTrainedModel):
+         return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
+ 
+         if global_attention_mask is None:
+-            logger.info("Initializing global attention on CLS token...")
++            # logger.info("Initializing global attention on CLS token...")
+             global_attention_mask = torch.zeros_like(input_ids)
+             # global attention on cls token
+             global_attention_mask[:, 0] = 1
+@@ -1218,6 +1221,81 @@ class LongformerForSequenceClassification(BertPreTrainedModel):
+             loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
+         )
+ 
++class LongformerForMultiLabelSequenceClassification(BertPreTrainedModel):
++    config_class = LongformerConfig
++    base_model_prefix = "longformer"
++
++    def __init__(self, config, pos_weight = None):
++        super().__init__(config)
++        self.num_labels = config.num_labels
++        self.pos_weight = pos_weight
++        self.longformer = LongformerModel(config)
++        self.classifier = LongformerClassificationHead(config)
++
++        self.init_weights()
++
++    @add_start_docstrings_to_callable(LONGFORMER_INPUTS_DOCSTRING.format("(batch_size, sequence_length)"))
++    @add_code_sample_docstrings(
++        tokenizer_class=_TOKENIZER_FOR_DOC,
++        checkpoint="allenai/longformer-base-4096",
++        output_type=SequenceClassifierOutput,
++        config_class=_CONFIG_FOR_DOC,
++    )
++    def forward(
++        self,
++        input_ids=None,
++        attention_mask=None,
++        global_attention_mask=None,
++        token_type_ids=None,
++        position_ids=None,
++        inputs_embeds=None,
++        labels=None,
++        output_attentions=None,
++        output_hidden_states=None,
++        return_tuple=None,
++    ):
++        r"""
++        Multi-label classification
++        """
++        return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
++
++        if global_attention_mask is None:
++            # logger.info("Initializing global attention on CLS token...")
++            global_attention_mask = torch.zeros_like(input_ids)
++            # global attention on cls token
++            global_attention_mask[:, 0] = 1
++
++        outputs = self.longformer(
++            input_ids,
++            attention_mask=attention_mask,
++            global_attention_mask=global_attention_mask,
++            token_type_ids=token_type_ids,
++            position_ids=position_ids,
++            inputs_embeds=inputs_embeds,
++            output_attentions=output_attentions,
++            output_hidden_states=output_hidden_states,
++            return_tuple=return_tuple,
++        )
++        sequence_output = outputs[0]
++        logits = self.classifier(sequence_output)
++
++        loss = None
++        if labels is not None:
++            if self.pos_weight is not None:
++                pos_weight = torch.from_numpy(self.pos_weight).to(logits.device)
++                loss_fct = BCEWithLogitsLoss(pos_weight = pos_weight)
++            else:
++                loss_fct = BCEWithLogitsLoss()
++            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
++
++        if return_tuple:
++            output = (logits,) + outputs[2:]
++            return ((loss,) + output) if loss is not None else output
++
++        return SequenceClassifierOutput(
++            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
++        )
++
+ 
+ class LongformerClassificationHead(nn.Module):
+     """Head for sentence-level classification tasks."""
+diff --git a/src/transformers/modeling_roberta.py b/src/transformers/modeling_roberta.py
+index 00a0ecc3..98bab23c 100644
+--- a/src/transformers/modeling_roberta.py
++++ b/src/transformers/modeling_roberta.py
+@@ -21,7 +21,7 @@ import warnings
+ 
+ import torch
+ import torch.nn as nn
+-from torch.nn import CrossEntropyLoss, MSELoss
++from torch.nn import CrossEntropyLoss, MSELoss, BCEWithLogitsLoss, ModuleList
+ 
+ from .configuration_roberta import RobertaConfig
+ from .file_utils import add_code_sample_docstrings, add_start_docstrings, add_start_docstrings_to_callable
+@@ -364,6 +364,84 @@ class RobertaForSequenceClassification(BertPreTrainedModel):
+             loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
+         )
+ 
++@add_start_docstrings(
++    """RoBERTa Model transformer with a sequence classification/regression head on top (a linear layer
++    on top of the pooled output) e.g. for GLUE tasks. """,
++    ROBERTA_START_DOCSTRING,
++)
++class RobertaForMultiLabelSequenceClassification(BertPreTrainedModel):
++    config_class = RobertaConfig
++    base_model_prefix = "roberta"
++
++    def __init__(self, config, pos_weight = None):
++        super().__init__(config)
++        self.num_labels = config.num_labels
++        self.pos_weight = pos_weight
++        self.roberta = RobertaModel(config)
++        self.classifier = RobertaClassificationHead(config)
++
++        self.init_weights()
++
++    @add_start_docstrings_to_callable(ROBERTA_INPUTS_DOCSTRING.format("(batch_size, sequence_length)"))
++    @add_code_sample_docstrings(
++        tokenizer_class=_TOKENIZER_FOR_DOC,
++        checkpoint="roberta-base",
++        output_type=SequenceClassifierOutput,
++        config_class=_CONFIG_FOR_DOC,
++    )
++    def forward(
++        self,
++        input_ids=None,
++        attention_mask=None,
++        token_type_ids=None,
++        position_ids=None,
++        head_mask=None,
++        inputs_embeds=None,
++        labels=None,
++        output_attentions=None,
++        output_hidden_states=None,
++        return_tuple=None,
++    ):
++        r"""
++        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`, defaults to :obj:`None`):
++            Labels for computing the sequence classification/regression loss.
++            Indices should be in :obj:`[0, ..., config.num_labels - 1]`.
++            If :obj:`config.num_labels == 1` a regression loss is computed (Mean-Square loss),
++            If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
++        """
++        return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
++
++        outputs = self.roberta(
++            input_ids,
++            attention_mask=attention_mask,
++            token_type_ids=token_type_ids,
++            position_ids=position_ids,
++            head_mask=head_mask,
++            inputs_embeds=inputs_embeds,
++            output_attentions=output_attentions,
++            output_hidden_states=output_hidden_states,
++            return_tuple=return_tuple,
++        )
++        sequence_output = outputs[0]
++        logits = self.classifier(sequence_output)
++
++        loss = None
++        if labels is not None:
++            if self.pos_weight is not None:
++                pos_weight = torch.from_numpy(self.pos_weight).to(logits.device)
++                loss_fct = BCEWithLogitsLoss(pos_weight = pos_weight)
++            else:
++                loss_fct = BCEWithLogitsLoss()
++            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
++
++        if return_tuple:
++            output = (logits,) + outputs[2:]
++            return ((loss,) + output) if loss is not None else output
++
++        return SequenceClassifierOutput(
++            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
++        )
++
+ 
+ @add_start_docstrings(
+     """Roberta Model with a multiple choice classification head on top (a linear layer on top of
+@@ -557,6 +635,241 @@ class RobertaClassificationHead(nn.Module):
+         x = self.out_proj(x)
+         return x
+ 
++class RobertaClassificationHead_Structure(nn.Module):
++    """Head for sentence-level classification tasks."""
++
++    def __init__(self, config):
++        super().__init__()
++        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
++        self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        self.out_proj1 = nn.Linear(config.hidden_size, config.num_labels - 1)
++        self.out_proj2 = nn.Linear(config.hidden_size + config.num_labels - 1, 1)
++
++    def forward(self, features, **kwargs):
++        x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
++        x = self.dropout(x)
++        x = self.dense(x)
++        x = torch.tanh(x)
++        x = self.dropout(x)
++        x1 = self.out_proj1(x)
++        x2 = self.out_proj2(torch.cat((x, x1), dim = 1))
++        return torch.cat((x2, x1), dim = 1)
++
++
++class RobertaForMultiLabelSequenceClassification_w_Structure(BertPreTrainedModel):
++    config_class = RobertaConfig
++    base_model_prefix = "roberta"
++
++    def __init__(self, config, parents, clsOrder, classes):
++        super().__init__(config)
++        self.num_labels = config.num_labels
++
++        self.roberta = RobertaModel(config)
++        self.classifier = RobertaClassificationHead_ModStructure(config, parents, clsOrder, classes)
++        self.parents = parents
++        self.clsOrder = clsOrder
++        # self.device = args.device
++        self.init_weights()
++
++    @add_start_docstrings_to_callable(ROBERTA_INPUTS_DOCSTRING.format("(batch_size, sequence_length)"))
++    @add_code_sample_docstrings(
++        tokenizer_class=_TOKENIZER_FOR_DOC,
++        checkpoint="roberta-base",
++        output_type=SequenceClassifierOutput,
++        config_class=_CONFIG_FOR_DOC,
++    )
++    def forward(
++        self,
++        input_ids=None,
++        attention_mask=None,
++        token_type_ids=None,
++        position_ids=None,
++        head_mask=None,
++        inputs_embeds=None,
++        labels=None,
++        output_attentions=None,
++        output_hidden_states=None,
++        return_tuple=None,
++    ):
++        r"""
++        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`, defaults to :obj:`None`):
++            Labels for computing the sequence classification/regression loss.
++            Indices should be in :obj:`[0, ..., config.num_labels - 1]`.
++            If :obj:`config.num_labels == 1` a regression loss is computed (Mean-Square loss),
++            If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
++        """
++        return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
++
++        outputs = self.roberta(
++            input_ids,
++            attention_mask=attention_mask,
++            token_type_ids=token_type_ids,
++            position_ids=position_ids,
++            head_mask=head_mask,
++            inputs_embeds=inputs_embeds,
++            output_attentions=output_attentions,
++            output_hidden_states=output_hidden_states,
++            return_tuple=return_tuple,
++        )
++        sequence_output = outputs[0]
++        logits = self.classifier(sequence_output, self.parents, self.clsOrder, self.classes)
++        # print(logits)
++        # print(self.num_labels)
++        loss = None
++        if labels is not None:
++            loss_fct = BCEWithLogitsLoss()
++            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
++        # print(loss) 
++        if return_tuple:
++            output = (logits,) + outputs[2:]
++            return ((loss,) + output) if loss is not None else output
++
++        return SequenceClassifierOutput(
++            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
++        )
++
++class RobertaClassificationHead_ModStructure(nn.Module):
++    # init network
++    def __init__(self, config, parents, clsOrder, classes):
++        super().__init__()
++        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
++        self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        self.classifiers = ModuleList()
++        self.device = device
++        # add linear layers for 
++        for clsName in clsOrder:
++            # print(clsName)
++            # print(config.hidden_size + len(parents[clsName]))
++            self.classifiers.append( nn.Linear(config.hidden_size + len(parents[clsName]), 1))
++    
++    def forward(self, features, parents, clsOrder, classes, **kwargs):
++        x = features[:, 0, :]
++        x = self.dropout(x)
++        x = self.dense(x)
++        x = torch.tanh(x)
++        encoding = self.dropout(x)
++        # print(len(clsOrder))
++        clsOuts = torch.zeros(x.shape[0], len(clsOrder))
++        for ind in range(len(clsOrder)):
++            current_cls = clsOrder[ind]
++            if len( parents[current_cls] ) == 0:
++                current_cls_out = self.classifiers[ind](encoding)
++            else:
++                num_parents = len(parents[current_cls])
++                parents_outs = torch.zeros(x.shape[0], num_parents)
++                for parent_ind in range(num_parents):
++                    parent = parents[current_cls][parent_ind]
++                    parents_outs[:, parent_ind] = clsOuts[:, classes.index(parent)]
++                parents_outs = parents_outs.to(encoding.device)
++                current_cls_out = self.classifiers[ind](torch.cat( (encoding, parents_outs), dim = 1))
++            clsOuts[:, classes.index(current_cls)] = current_cls_out[:,0]
++            # print(clsOuts[:, classes.index(current_cls)].shape)
++            # print(current_cls_out[:,0].shape)
++        clsOuts = clsOuts.to(encoding.device)
++        # print(clsOuts.shape)
++        return clsOuts
++
++class RobertaMergeClassificationHead(nn.Module):
++    """Head for sentence-level classification tasks."""
++    def __init__(self, config, extra_dims, bilinear_dim = None):
++        super().__init__()
++
++        # Option 1: cat + non-linearity
++        # self.dense1 = nn.Linear(config.hidden_size, config.hidden_size)
++        self.dense = nn.Linear(config.hidden_size + extra_dims, config.hidden_size)
++        self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
++        # Option 2: bilinear
++
++        # self.dense = nn.Linear(config.hidden_size, config.hidden_size)
++        # self.bilinear = nn.Bilinear(config.hidden_size, extra_dims, bilinear_dim)
++
++        # self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        # self.out_proj = nn.Linear(bilinear_dim, config.num_labels)
++    def forward(self, features, extra_feats, **kwargs):
++        # x = self.dense1(x)
++        # Option 1: standard extra dense layer
++        x = torch.cat( (features[:, 0, :], extra_feats), dim=1)  # take <s> token (equiv. to [CLS])
++        x = self.dropout(x)
++        x = self.dense(x)
++        # Option 2: bilinear layer
++        # x = features[:, 0, :]     
++        # x = self.dense(x)
++        # x = self.dropout(x)
++        # x = self.dropout(x)
++        # x = self.bilinear(x, extra_feats)
++        # resume
++        x = torch.tanh(x)
++        x = self.dropout(x)
++        x = self.out_proj(x)
++        return x
++
++class RobertaForSequenceClassificationWithFeatures(BertPreTrainedModel):
++    config_class = RobertaConfig
++    base_model_prefix = "roberta"
++    def __init__(self, config, num_domains, embed_dims=20):
++        super().__init__(config)
++        self.num_labels = config.num_labels
++        self.roberta = RobertaModel(config)
++        self.classifier = RobertaMergeClassificationHead(config, embed_dims)
++        self.dom_embeddings = nn.Embedding(num_domains, embed_dims)
++        self.init_weights()
++    @add_start_docstrings_to_callable(ROBERTA_INPUTS_DOCSTRING.format("(batch_size, sequence_length)"))
++    @add_code_sample_docstrings(
++        tokenizer_class=_TOKENIZER_FOR_DOC,
++        checkpoint="roberta-base",
++        output_type=SequenceClassifierOutput,
++        config_class=_CONFIG_FOR_DOC,
++    )
++    def forward(
++        self,
++        input_ids=None,
++        attention_mask=None,
++        token_type_ids=None,
++        position_ids=None,
++        head_mask=None,
++        inputs_embeds=None,
++        input_domains=None,    ## batch_size x 1
++        labels=None,
++        output_attentions=None,
++        output_hidden_states=None,
++        return_tuple=None,
++    ):
++        r"""
++        labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`, defaults to :obj:`None`):
++            Labels for computing the sequence classification/regression loss.
++            Indices should be in :obj:`[0, ..., config.num_labels - 1]`.
++            If :obj:`config.num_labels == 1` a regression loss is computed (Mean-Square loss),
++            If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
++        """
++        return_tuple = return_tuple if return_tuple is not None else self.config.use_return_tuple
++        outputs = self.roberta(
++            input_ids,
++            attention_mask=attention_mask,
++            token_type_ids=token_type_ids,
++            position_ids=position_ids,
++            head_mask=head_mask,
++            inputs_embeds=inputs_embeds,
++            output_attentions=output_attentions,
++            output_hidden_states=output_hidden_states,
++            return_tuple=return_tuple,
++        )
++        sequence_output = outputs[0]
++        # get domain embeddings
++        dom_embeddings = self.dom_embeddings(input_domains)
++        logits = self.classifier(sequence_output, dom_embeddings)
++        loss = None
++        if labels is not None:
++            loss_fct = CrossEntropyLoss()
++            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
++        if return_tuple:
++            output = (logits,) + outputs[2:]
++            return ((loss,) + output) if loss is not None else output
++        return SequenceClassifierOutput(
++            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
++        )
++
++
+ 
+ @add_start_docstrings(
+     """Roberta Model with a span classification head on top for extractive question-answering tasks like SQuAD (a linear layers on top of
+diff --git a/src/transformers/process_tetrad_output.py b/src/transformers/process_tetrad_output.py
+new file mode 100644
+index 00000000..8e142b2c
+--- /dev/null
++++ b/src/transformers/process_tetrad_output.py
+@@ -0,0 +1,138 @@
++# Abd-gas/bloating <- Abd-pain
++# Abd-gas/bloating -> Constipation
++# ...
++# Cirrhosis <-- Other
++# ....
++
++# # build the dictionary of parents from the graph structure
++# parents = {}
++
++# parents['Hepatitis'] = ['CRC-Screen', 'GIB', 'Dyspepsia']
++# parents['GIB'] = {}
++
++
++
++# # classifier label -> int
++# cls2int = {}
++# cls2int['Hepatitis'] = 0
++# ...
++# cls2int['FOBT'] = 18
++# ...
++
++import os
++from os.path import join
++import sys
++import re
++import pandas as pd
++
++def find_parent_nodes(tetrad_output_file, classes_file):
++    # 1. read in all question categories
++    classes = []
++    with open(classes_file) as f:
++        lines = f.readlines()
++    classes = [x.strip() for x in lines] 
++    
++    # 2. build a dictionary mapping child node with its parent nodes
++    # initiate the parent dictionary
++    parents = {k:[] for k in classes}
++
++    ancestry = {k:[] for k in classes}
++
++    tetrad_output_file = open(tetrad_output_file, 'r') 
++    lines = tetrad_output_file.readlines()
++    for line in lines:
++        elements = re.split('\s', line)
++        parent_node = elements[0]
++        try:
++            child_node = elements[2]
++            if child_node not in parents:
++                parents.update({child_node: [parent_node]})
++            else:
++                parents[child_node].append(parent_node)
++        except:
++            pass
++    return parents, classes
++
++def get_clsOrder(parents, classes):
++    
++    clsNames = classes.copy()
++    clsOrder = []
++    printLimit = 0
++    while len(clsNames) != 0:
++        # print(len(clsNames))
++        # print(len(clsOrder))
++        # print(clsOrder)
++        for clsName in clsNames:
++            # print(clsName)
++            if len( parents[clsName] ) == 0:
++                clsOrder.append(clsName)
++                clsNames.remove(clsName)
++            else:
++                parentsDone = 0
++                for parent in parents[clsName]:
++                    if parent in clsOrder:
++                        parentsDone += 1
++                if parentsDone == len(parents[clsName]):
++                    clsOrder.append(clsName)
++                    clsNames.remove(clsName)
++        printLimit += 1
++            
++    return clsOrder
++
++
++def find_ancestry(parents_dict, clsOrder):
++    ancestry_dict = {k:[] for k in clsOrder}
++    for node in ancestry_dict:
++        ancestry_dict[node] = find_ancestry_recursive(node, parents_dict, ancestry_dict)
++    return ancestry_dict
++
++def find_ancestry_recursive(child, parents_dict, ancestry_dict):
++    ancestry_list = []
++    if len(parents_dict[child]) == 0:
++        return []
++    ancestry_list += parents_dict[child]
++    for p in parents_dict[child]:
++        if len(ancestry_dict[p]) != 0:
++            ancestry_list += ancestry_dict[p]
++        else:
++            ancestry_list += find_ancestry_recursive(p, parents_dict, ancestry_dict)
++    return list(set(ancestry_list))
++
++def ordered_to_origin(clsOrder, classes, clsOuts):
++    new_clsOuts = torch.zeros(len(clsOrder))
++    for ind in len(range(classes)):
++        original_cls = classes[ind]
++        new_clsOuts[ind] = clsOrder[clsOrder.index(original_cls)]
++    return new_clsOuts
++
++def nodes_ordered_by_freqencey(train_data_dir):
++    train = pd.read_csv(train_data_dir, index_col = 0, sep = '\t', encoding = "utf8")
++    y = train.iloc[:,4:].copy()
++    sorted_y_count = sorted(y.sum(0).items(), key=lambda kv: kv[1], reverse=True)
++    freq_order = [i[0] for i in sorted_y_count]
++
++    freq_parents = {k:[] for k in freq_order}
++    for i in range(len(freq_order)):
++        freq_parents[freq_order[i]] += freq_order[:i]
++
++    return freq_order, freq_parents
++
++    
++def main(args):
++    tetrad_output_file_dir = args[0]
++    classes_file_dir = args[1]
++    train_data_dir = args[2]
++    parents, classes = find_parent_nodes(tetrad_output_file_dir, classes_file_dir)
++    # print(parents)
++    # print(classes)
++    clsOrder = get_clsOrder(parents, classes)
++    # print(clsOrder)
++    ancestry = find_ancestry(parents, clsOrder)
++    # print(ancestry)
++    
++    freq_order, freq_parents = nodes_ordered_by_freqencey(train_data_dir)
++    print(freq_order)
++    print(freq_parents)
++if __name__ == '__main__':
++    main(sys.argv[1:])
++    
+diff --git a/src/transformers/trainer.py b/src/transformers/trainer.py
+index e21e6cdc..259d08a9 100644
+--- a/src/transformers/trainer.py
++++ b/src/transformers/trainer.py
+@@ -17,6 +17,7 @@ from torch.utils.data.dataset import Dataset
+ from torch.utils.data.distributed import DistributedSampler
+ from torch.utils.data.sampler import RandomSampler, Sampler, SequentialSampler
+ from tqdm.auto import tqdm, trange
++from sklearn.metrics import f1_score
+ 
+ from .data.data_collator import DataCollator, default_data_collator
+ from .file_utils import is_apex_available, is_torch_tpu_available
+@@ -177,16 +178,18 @@ class Trainer:
+         self,
+         model: PreTrainedModel,
+         args: TrainingArguments,
++        compute_metrics: Optional[Callable[[EvalPrediction], Dict]]= None,
++        output_mode = None,
+         data_collator: Optional[DataCollator] = None,
+         train_dataset: Optional[Dataset] = None,
+         eval_dataset: Optional[Dataset] = None,
+-        compute_metrics: Optional[Callable[[EvalPrediction], Dict]] = None,
+         prediction_loss_only=False,
+         tb_writer: Optional["SummaryWriter"] = None,
+         optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = None,
+     ):
+         self.model = model.to(args.device)
+         self.args = args
++        self.output_mode = output_mode
+         self.data_collator = data_collator if data_collator is not None else default_data_collator
+         self.train_dataset = train_dataset
+         self.eval_dataset = eval_dataset
+@@ -381,6 +384,8 @@ class Trainer:
+                 Local path to the model if the model to train has been instantiated from a local path. If present,
+                 training will resume from the optimizer/scheduler states loaded here.
+         """
++        # print(self.train_dataset.get_labels())
++
+         train_dataloader = self.get_train_dataloader()
+         if self.args.max_steps > 0:
+             t_total = self.args.max_steps
+@@ -469,6 +474,8 @@ class Trainer:
+ 
+         tr_loss = 0.0
+         logging_loss = 0.0
++        max_metric = 0.0
++
+         model.zero_grad()
+         train_iterator = trange(
+             epochs_trained, int(num_train_epochs), desc="Epoch", disable=not self.is_local_master()
+@@ -532,36 +539,83 @@ class Trainer:
+                         logging_loss = tr_loss
+ 
+                         self._log(logs)
+-
+-                    if self.args.evaluate_during_training and self.global_step % self.args.eval_steps == 0:
+-                        self.evaluate()
+-
+-                    if self.args.save_steps > 0 and self.global_step % self.args.save_steps == 0:
+-                        # In all cases (even distributed/parallel), self.model is always a reference
+-                        # to the model we want to save.
+-                        if hasattr(model, "module"):
+-                            assert model.module is self.model
+-                        else:
+-                            assert model is self.model
+-                        # Save model checkpoint
+-                        output_dir = os.path.join(self.args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{self.global_step}")
+-
+-                        self.save_model(output_dir)
+-
+-                        if self.is_world_master():
+-                            self._rotate_checkpoints()
+-
+-                        if is_torch_tpu_available():
+-                            xm.rendezvous("saving_optimizer_states")
+-                            xm.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+-                            xm.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+-                        elif self.is_world_master():
+-                            torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+-                            torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+-
+                 if self.args.max_steps > 0 and self.global_step > self.args.max_steps:
+                     epoch_iterator.close()
+                     break
++            # if self.args.evaluate_during_training and self.global_step % self.args.eval_steps == 0:
++            if self.args.evaluate_during_training:
++                # output_metrics = self.evaluate()
++
++                output = self.evaluate()
++                output_metrics = output.metrics
++                
++                # write evaluation metrics
++                output_eval_file = os.path.join(self.args.output_dir, "eval_metric_epoch.txt")
++                with open(output_eval_file, "a") as writer:
++                    logger.info("***** Eval for each epoch *****")
++                    writer.write("Epoch %d\n" % epoch)
++                    for key in output_metrics.keys():
++                        writer.write("%s\n%s\n" % (key, output_metrics[key]))
++                
++                # save the optimal model to the output directory
++                if max_metric < output_metrics["eval_f1"]:
++                    max_metric = output_metrics["eval_f1"]
++                    # save the model with the best f1 score
++                    if hasattr(model, "module"):
++                        assert model.module is self.model
++                    else:
++                        assert model is self.model
++                    # Save model checkpoint
++                    output_dir = os.path.join(self.args.output_dir, "model")
++                    os.makedirs(output_dir, exist_ok=True)
++                    
++                    if self.output_mode == "classification" or self.output_mode =="classificationdomain":
++                        preds = np.argmax(output.predictions, axis=1)
++                    elif self.output_mode == "regression":
++                        preds = np.squeeze(output.predictions)
++                    elif self.output_mode == "mltclassification" or self.output_mode == "mltstrcls":
++                        # if logits > 0, then the predicted prob > 0.5
++                        preds = (output.predictions > 0).astype(int)
++                    
++                    np.savetxt(os.path.join(output_dir, "pred_labels.csv"), preds, delimiter = ",")
++                    np.savetxt(os.path.join(output_dir, "orig_labels.csv"), output.label_ids, delimiter = ",")
++                    # output_dir = os.path.join(self.args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{self.global_step}")
++
++                    self.save_model(output_dir)
++                    if self.is_world_master():
++                        self._rotate_checkpoints()
++
++                    if is_torch_tpu_available():
++                        xm.rendezvous("saving_optimizer_states")
++                        xm.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
++                        xm.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
++                    elif self.is_world_master():
++                        torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
++                        torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
++
++                    # if self.args.save_steps > 0 and self.global_step % self.args.save_steps == 0:
++                    #     # In all cases (even distributed/parallel), self.model is always a reference
++                    #     # to the model we want to save.
++                    #     if hasattr(model, "module"):
++                    #         assert model.module is self.model
++                    #     else:
++                    #         assert model is self.model
++                    #     # Save model checkpoint
++                    #     output_dir = os.path.join(self.args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{self.global_step}")
++
++                    #     self.save_model(output_dir)
++
++                    #     if self.is_world_master():
++                    #         self._rotate_checkpoints()
++
++                    #     if is_torch_tpu_available():
++                    #         xm.rendezvous("saving_optimizer_states")
++                    #         xm.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
++                    #         xm.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
++                    #     elif self.is_world_master():
++                    #         torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
++                    #         torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
++
+             if self.args.max_steps > 0 and self.global_step > self.args.max_steps:
+                 train_iterator.close()
+                 break
+@@ -730,7 +784,9 @@ class Trainer:
+             logger.info("Deleting older checkpoint [{}] due to args.save_total_limit".format(checkpoint))
+             shutil.rmtree(checkpoint)
+ 
+-    def evaluate(self, eval_dataset: Optional[Dataset] = None) -> Dict[str, float]:
++    def evaluate(
++        self, eval_dataset: Optional[Dataset] = None, 
++        output_dir: Optional[str] = None):
+         """
+         Run evaluation and returns metrics.
+ 
+@@ -744,7 +800,6 @@ class Trainer:
+             A dictionary containing the evaluation loss and the potential metrics computed from the predictions.
+         """
+         eval_dataloader = self.get_eval_dataloader(eval_dataset)
+-
+         output = self._prediction_loop(eval_dataloader, description="Evaluation")
+ 
+         self._log(output.metrics)
+@@ -753,7 +808,7 @@ class Trainer:
+             # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
+             xm.master_print(met.metrics_report())
+ 
+-        return output.metrics
++        return output
+ 
+     def predict(self, test_dataset: Dataset) -> PredictionOutput:
+         """
+@@ -864,14 +919,29 @@ class Trainer:
+             preds = preds.cpu().numpy()
+         if label_ids is not None:
+             label_ids = label_ids.cpu().numpy()
+-
++        
++        # if self.output_mode == "classification" or "classificationdomain":
++        #     preds = np.argmax(output.predictions, axis=1)
++        # elif self.output_mode == "regression":
++        #     preds = np.squeeze(output.predictions)
++        # elif self.output_mode == "mltclassification":
++        #     # if logits > 0, then the predicted prob > 0.5
++        #     preds = (output.predictions > 0).astype(int)
++        
+         if self.compute_metrics is not None and preds is not None and label_ids is not None:
+             metrics = self.compute_metrics(EvalPrediction(predictions=preds, label_ids=label_ids))
+         else:
+             metrics = {}
+         if len(eval_losses) > 0:
+             metrics["eval_loss"] = np.mean(eval_losses)
+-
++        
++        # compute macro-f1 score if for a multi-class or multi-label classification
++        # compute the f1 score for the minority class for binary classification
++        # if len(self.train_dataset.get_labels()) == 2:
++        #     metrics["f1"] = f1_score(label_ids, preds, average='binary')
++        # else:
++        #     metrics["f1"] = f1_score(label_ids, preds, average='macro')
++        
+         # Prefix all keys with eval_
+         for key in list(metrics.keys()):
+             if not key.startswith("eval_"):
+diff --git a/src/transformers/training_args.py b/src/transformers/training_args.py
+index 9609cc91..9ca062ec 100644
+--- a/src/transformers/training_args.py
++++ b/src/transformers/training_args.py
+@@ -123,14 +123,21 @@ class TrainingArguments:
+             )
+         },
+     )
+-
++    pos_weight: bool = field(default=False, metadata={"help": "Whether to add pos_weight for BCEWithLogitsLoss (See BCEWithLogitsLoss for details)."})
+     do_train: bool = field(default=False, metadata={"help": "Whether to run training."})
+     do_eval: bool = field(default=False, metadata={"help": "Whether to run eval on the dev set."})
+     do_predict: bool = field(default=False, metadata={"help": "Whether to run predictions on the test set."})
++    
++    do_cv: bool = field(default=False, metadata={"help": "Whether to cross validation, default 10-fold cross validation."})
++    
+     evaluate_during_training: bool = field(
+         default=False, metadata={"help": "Run evaluation during training at each logging step."},
+     )
+ 
++    parents_type: str = field(
++        default=None, metadata={"help": "Whether to include the parents or the ancestry."}
++    )
++
+     per_device_train_batch_size: int = field(
+         default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for training."}
+     )
