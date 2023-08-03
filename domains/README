@@ -1,0 +1,8 @@
+The script here is used to convert the dataset into a format I can use in cnlp_transformers. I first ran the script to convert the entire csv into json, then do the following to split into train/dev.
+
+```
+shuf --random-source=<(yes 42) <path to full json file> | head -1323 > ~/mnt/r/DeepLearning/mmtl/psych-domains/train.json
+
+shuf --random-source=<(yes 42) <path to full json file> | tail -331 > ~/mnt/r/DeepLearning/mmtl/psych-domains/dev.json
+
+```

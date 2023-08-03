@@ -19,7 +19,7 @@ import logging
 from time import time
 
 app = FastAPI()
-model_name = '/model/model'
+model_name = 'models/seed_18/model'
 max_length = 128
 batch_size = 64
 
