@@ -26,8 +26,7 @@ def main(args):
                 'Substance']
     metadata = { "version" : "1.0",
                  "task" : "psych-domain",
-                 "tasks" : domains,
-                 "output_mode": "mtl",
+                 "subtasks" : [ {'task_name': task_name, 'output_mode': 'classification'} for task_name in domains]
                  }
     # labels = ['No', 'Yes']
 
@@ -43,7 +42,7 @@ def main(args):
             sent_id = row['SentenceID']
             labels = {x:'No' for x in domains}
             text = clean_string(row['Text'])
-            inst = {'text': text, 'sentId': sent_id }
+            inst = {'text': text, 'id': sent_id }
             inst.update(labels)
 
             for dom_ind in range(6):
