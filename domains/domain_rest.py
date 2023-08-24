@@ -33,6 +33,9 @@ class DocumentResults(BaseModel):
 class SentenceDocument(BaseModel):
     sentence: str
 
+class Document(BaseModel):
+    text: str
+
 class SentenceResults(BaseModel):
     ''' Result is a mapping from an element in the domain array to a boolean value representing whether that domain is present in this sentence '''
     results: List[Dict[str, bool]]
@@ -40,18 +43,19 @@ class SentenceResults(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     initialize_cnlpt_model(app, model_name)
+    
     # sentence segmenter
-    app.state.rush = RuSH('conf/rush_rules.tsv')
+    app.state.rush = RuSH('/PHShome/tm685/psychosis-sentiment-data-augmentation/domains/conf/rush_rules.tsv')
 
 @app.post("/psych/domain/process_document")
-async def process_document(doc: str = Body()):
+async def process_document(doc: Document):
     # break into sentences:
-    print("Length of document string is %d" % len(doc))
+    print("Length of document string is %d" % len(doc.text))
     sents = []
-    sent_spans = app.state.rush.segToSentenceSpans(doc)
+    sent_spans = app.state.rush.segToSentenceSpans(doc.text)
     ret_spans = []
     for sent_span in sent_spans:
-        sent = doc[sent_span.begin:sent_span.end]
+        sent = doc.text[sent_span.begin:sent_span.end]
         sents.append(sent)
         ret_spans.append( (sent_span.begin, sent_span.end))
 
@@ -77,7 +81,7 @@ def process_sentences(sents: List[str]) -> List[Dict[str,bool]]:
 
     print("Sending %d instances to the get_dataset method" % (len(instances)))
 
-    dataset = get_dataset(instances, app.state.tokenizer, None, ['psychdomains',], max_length)
+    dataset = get_dataset(instances, app.state.tokenizer, max_length=max_length)
 
     print("Received %d rows in the dataset" % (dataset.num_rows))
 
@@ -89,8 +93,9 @@ def process_sentences(sents: List[str]) -> List[Dict[str,bool]]:
 
     for sent_ind in range(len(sents)):
         sent_result = dict()
-        for domain_ind in range(len(all_domains)):
+        for domain_ind,task_name in enumerate(app.state.config.finetuning_task):
             domain_output = predictions[domain_ind][sent_ind].argmax()
-            sent_result[all_domains[domain_ind]] = True if domain_output == 1 else False
+            sent_result[task_name] = app.state.config.label_dictionary[task_name][domain_output]
+            # sent_result[all_domains[domain_ind]] = True if domain_output == 1 else False
         results.append(sent_result)
     return results
